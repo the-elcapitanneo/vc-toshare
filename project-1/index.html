@@ -1,1 +1,198 @@
 
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Greedy Voxel Runner</title>
+<style>
+body{margin:0;overflow:hidden;background:#000}
+#hud{position:absolute;top:10px;left:10px;color:white;background:rgba(0,0,0,.5);padding:8px;font-family:sans-serif}
+</style>
+</head>
+<body>
+<div id="hud">
+Greedy-style Voxel Engine Prototype<br>
+WASD + Mouse | Space Jump<br>
+Auto-step over 1-block ledges
+</div>
+
+<script type="module">
+import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x87ceeb);
+
+const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.1,5000);
+const renderer=new THREE.WebGLRenderer({antialias:false,powerPreference:"high-performance"});
+renderer.setSize(innerWidth,innerHeight);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff,.9));
+const sun=new THREE.DirectionalLight(0xffffff,1.2);
+sun.position.set(100,200,100);
+scene.add(sun);
+
+const CHUNK=16, VIEW=4;
+const chunks=new Map();
+
+function terrain(x,z){
+ return Math.floor(
+  8 +
+  Math.sin(x*0.08)*2 +
+  Math.cos(z*0.08)*2 +
+  Math.sin((x+z)*0.03)*3
+ );
+}
+
+function key(x,z){ return x+","+z; }
+
+// "Greedy-ish" top surface meshing:
+// merges runs of equal-height blocks into rectangles.
+function buildChunk(cx,cz){
+ const pos=[], norm=[], col=[], ind=[];
+ let idx=0;
+
+ for(let z=0;z<CHUNK;z++){
+
+   let runStart=0;
+   let runHeight=terrain(cx*CHUNK,z+cz*CHUNK);
+
+   for(let x=1;x<=CHUNK;x++){
+
+     const h = x<CHUNK ? terrain(cx*CHUNK+x,z+cz*CHUNK) : -999;
+
+     if(h!==runHeight){
+
+       const x0=cx*CHUNK+runStart;
+       const x1=cx*CHUNK+x;
+       const wz=cz*CHUNK+z;
+
+       const verts=[
+        [x0,runHeight,wz],
+        [x1,runHeight,wz],
+        [x1,runHeight,wz+1],
+        [x0,runHeight,wz+1]
+       ];
+
+       verts.forEach(v=>{
+         pos.push(...v);
+         norm.push(0,1,0);
+         col.push(.35,.8,.35);
+       });
+
+       ind.push(idx,idx+1,idx+2,idx,idx+2,idx+3);
+       idx+=4;
+
+       runStart=x;
+       runHeight=h;
+     }
+   }
+ }
+
+ const geo=new THREE.BufferGeometry();
+ geo.setIndex(ind);
+ geo.setAttribute("position",new THREE.Float32BufferAttribute(pos,3));
+ geo.setAttribute("normal",new THREE.Float32BufferAttribute(norm,3));
+ geo.setAttribute("color",new THREE.Float32BufferAttribute(col,3));
+
+ const mesh=new THREE.Mesh(
+   geo,
+   new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide})
+ );
+
+ scene.add(mesh);
+ chunks.set(key(cx,cz),mesh);
+}
+
+function updateChunks(px,pz){
+ const ccx=Math.floor(px/CHUNK);
+ const ccz=Math.floor(pz/CHUNK);
+
+ for(let x=ccx-VIEW;x<=ccx+VIEW;x++){
+  for(let z=ccz-VIEW;z<=ccz+VIEW;z++){
+   const k=key(x,z);
+   if(!chunks.has(k)) buildChunk(x,z);
+  }
+ }
+}
+
+const player={x:0,y:20,z:0,vy:0};
+camera.position.set(0,20,0);
+
+const keys={};
+onkeydown=e=>keys[e.key.toLowerCase()]=true;
+onkeyup=e=>keys[e.key.toLowerCase()]=false;
+
+let yaw=0,pitch=0;
+
+document.body.onclick=()=>document.body.requestPointerLock();
+
+document.addEventListener("mousemove",e=>{
+ if(document.pointerLockElement){
+  yaw-=e.movementX*0.002;
+  pitch=Math.max(-1.4,Math.min(1.4,pitch-e.movementY*0.002));
+ }
+});
+
+function groundHeight(x,z){
+ return terrain(Math.floor(x),Math.floor(z))+2;
+}
+
+function tick(){
+
+ requestAnimationFrame(tick);
+
+ const forward={x:-Math.sin(yaw),z:-Math.cos(yaw)};
+ const right={x:Math.cos(yaw),z:-Math.sin(yaw)};
+
+ let dx=0,dz=0;
+ const speed=.18;
+
+ if(keys.w){dx+=forward.x*speed; dz+=forward.z*speed;}
+ if(keys.s){dx-=forward.x*speed; dz-=forward.z*speed;}
+ if(keys.a){dx-=right.x*speed; dz-=right.z*speed;}
+ if(keys.d){dx+=right.x*speed; dz+=right.z*speed;}
+
+ // auto-step over 1-block ledges
+ const currentGround=groundHeight(player.x,player.z);
+ const nextGround=groundHeight(player.x+dx,player.z+dz);
+
+ if(nextGround-currentGround<=1.1){
+   player.x+=dx;
+   player.z+=dz;
+ }
+
+ if(keys[" "] && Math.abs(player.y-currentGround)<0.2){
+   player.vy=.28;
+ }
+
+ player.vy-=0.015;
+ player.y+=player.vy;
+
+ const g=groundHeight(player.x,player.z);
+ if(player.y<g){
+   player.y=g;
+   player.vy=0;
+ }
+
+ camera.position.set(player.x,player.y,player.z);
+ camera.rotation.order="YXZ";
+ camera.rotation.y=yaw;
+ camera.rotation.x=pitch;
+
+ updateChunks(player.x,player.z);
+ renderer.render(scene,camera);
+}
+
+updateChunks(0,0);
+tick();
+
+addEventListener("resize",()=>{
+ camera.aspect=innerWidth/innerHeight;
+ camera.updateProjectionMatrix();
+ renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>
+
